@@ -1,30 +1,29 @@
-export const TaskState = Object.freeze({ RUNNING: "RUNNING", VERIFYING: "VERIFYING", DONE: "DONE", FAILED: "FAILED", INCOMPLETE: "INCOMPLETE" });
+export const TaskState = Object.freeze({ RUNNING: "RUNNING", DONE: "DONE", FAILED: "FAILED" });
 export const MilestoneState = Object.freeze({ PENDING: "PENDING", ACTIVE: "ACTIVE", DONE: "DONE", BLOCKED: "BLOCKED", SKIPPED: "SKIPPED" });
+export const CheckState = Object.freeze({ NOT_OBSERVED: "not observed", RUNNING: "running", PASS: "PASS", FAIL: "FAIL" });
 
-// Coding work deliberately has one immutable four-step plan.  Read evidence is
-// useful for understanding, but is not a progress item of its own.
+// Task progress deliberately measures lifecycle progress, not semantic proof.
+// Checks and recovery are observed separately from this immutable three-step plan.
 const TEMPLATES = Object.freeze({
-	feature: ["Understand", "Work", "Verify", "Finalize"],
-	bugfix: ["Understand", "Work", "Verify", "Finalize"],
-	refactor: ["Understand", "Work", "Verify", "Finalize"],
-	unknown: ["Understand", "Work", "Verify", "Finalize"],
-	mixed: ["Understand", "Work", "Verify", "Finalize"],
-	investigation: ["Understand", "Inspect", "Conclude", "Finalize"],
-	testing: ["Understand", "Run", "Resolve", "Finalize"],
+	feature: ["Understand", "Work", "Finalize"],
+	bugfix: ["Understand", "Work", "Finalize"],
+	refactor: ["Understand", "Work", "Finalize"],
+	unknown: ["Understand", "Work", "Finalize"],
+	mixed: ["Understand", "Work", "Finalize"],
+	investigation: ["Understand", "Work", "Finalize"],
+	testing: ["Understand", "Work", "Finalize"],
 });
 
 // Match executable command forms, not arbitrary output/text containing "test".
-// A shell prefix (for example `cd app &&`) is allowed because the final segment
-// is still an explicit verifier.
 const TEST_COMMAND = /(?:^|&&|\|\||;)\s*(?:(?:python(?:\d+(?:\.\d+)?)?|python3)\s+-m\s+(?:pytest|unittest)\b|(?:pytest|unittest|ruff|mypy|pyright|vitest|jest|eslint)\b|tsc\b(?:\s+--noEmit\b)?|(?:npm|pnpm|yarn)\s+(?:test\b|run\s+(?:test|lint|build|check)\b)|cargo\s+(?:test|check|clippy)\b|go\s+(?:test|vet)\b|(?:make|just)\s+(?:test|lint|build|check)\b)/i;
 const FEATURE = /\b(?:add|implement|create|build|feature|support|introduce|aggiungi|implementa|crea|sviluppa)\b/i;
 const BUGFIX = /\b(?:fix|bug|broken|failure|regression|errore|correggi|ripara)\b/i;
-const REFACTOR = /\b(?:refactor|cleanup|clean\s*up|restructure|semplifica|riorganizza)\b/i;
+const REFACTOR = /\b(?:refactor|restructure|cleanup|clean up|rename|simplif|ristruttura|ripulisci)\b/i;
 const INVESTIGATION = /\b(?:investigat\w*|analy[sz]e|analysis|diagnos\w*|root cause|why\b|explain|inspect|research|analizza|analisi|indaga|spiega)\b/i;
 const TESTING = /\b(?:test|tests|testing|verification|verifica)\b/i;
 
 export function classifyTask(prompt) {
-	const text = typeof prompt === "string" ? prompt.trim() : "";
+	const text = typeof prompt === "string" ? prompt : "";
 	const matches = [["bugfix", BUGFIX], ["refactor", REFACTOR], ["investigation", INVESTIGATION], ["testing", TESTING], ["feature", FEATURE]]
 		.filter(([, expression]) => expression.test(text)).map(([kind]) => kind);
 	return matches.length === 1 ? matches[0] : matches.length > 1 ? "mixed" : "unknown";
@@ -34,9 +33,9 @@ export function classifyBashCommand(command) {
 	return typeof command === "string" && TEST_COMMAND.test(command) ? "verification" : "other";
 }
 
-/** Evidence-only lifecycle state machine for the host-side progress widget. */
+/** Evidence-only, host-side lifecycle progress. Checks never affect progress. */
 export class TaskProgressMonitor {
-	constructor({ now = () => Date.now(), minVisibleMs = 2_500, etaMinHistoryMs = 60_000 } = {}) {
+	constructor({ now = () => Date.now(), minVisibleMs = 2_500, etaMinHistoryMs = 8_000 } = {}) {
 		this.now = now;
 		this.minVisibleMs = minVisibleMs;
 		this.etaMinHistoryMs = etaMinHistoryMs;
@@ -50,95 +49,64 @@ export class TaskProgressMonitor {
 		this.task = {
 			category, startedAt: at, state: TaskState.RUNNING,
 			milestones: TEMPLATES[category].map((label, index) => ({ label, state: index === 0 ? MilestoneState.ACTIVE : MilestoneState.PENDING })),
-			operationCount: 0, changes: 0, changeGeneration: 0, verifiedGeneration: -1,
-			// Runs are retained for the task so final settlement can reconcile only
-			// tool lifecycle evidence that was actually observed.
-			verificationRuns: [], verificationSequence: 0,
+			operationCount: 0, changes: 0, changeGeneration: 0,
+			checkRuns: [], verificationRuns: [], checkSequence: 0,
+			checks: CheckState.NOT_OBSERVED,
 			retries: 0, recoveryCount: 0, recoveryActive: false, terminalError: false,
-			// Historical completion keeps the user-facing plan monotonic while the
-			// active marker can move back for recovery or a new generation.
+			// Work may remain ACTIVE through cycles after its lifecycle step is reached.
 			progressFloor: 0, visible: false,
 		};
 		return this.result("task classified; awaiting operational evidence");
 	}
 
-	// toolCallId is deliberately part of the state-machine API.  A long bash
-	// command can emit many updates and finish in a later turn; command arguments
-	// alone are not a safe correlation key.
+	agentStart() { return this.result("agent started"); }
+
+	// toolCallId correlates a long check with its eventual completion.
 	toolStart(toolName, args = {}, at = this.now(), toolCallId) {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
 		this.task.operationCount += 1;
 		this.complete("understand", at);
-		const verification = toolName === "bash" && classifyBashCommand(args?.command) === "verification";
-
-		if (this.isCoding()) {
-			if (toolName === "edit" || toolName === "write") this.activateOnly("work");
-			if (verification) this.startVerification(toolCallId, at);
-		} else if (this.task.category === "investigation" && toolName === "read") {
-			this.activateOnly("inspect");
-		} else if (this.task.category === "testing" && verification) {
-			this.activateOnly("run");
-		}
+		this.activateOnly("work");
+		if (toolName === "bash" && classifyBashCommand(args?.command) === "verification") this.startCheck(toolCallId, at);
 		return this.result(this.startReason(toolName, args));
 	}
 
 	toolUpdate(toolName, toolCallId) {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
-		const run = toolName === "bash" ? this.verificationRun(toolCallId) : undefined;
-		return this.result(run && run.started && !run.settled ? "verification update observed" : "tool update observed");
+		const run = toolName === "bash" ? this.checkRun(toolCallId) : undefined;
+		return this.result(run && !run.settled ? "check update observed" : "tool update observed");
 	}
 
 	toolEnd(toolName, args = {}, isError = false, at = this.now(), toolCallId) {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
-		const run = toolName === "bash" ? this.verificationRun(toolCallId, args) : undefined;
-		const verification = Boolean(run);
+		const run = toolName === "bash" ? this.checkRun(toolCallId, args) : undefined;
 		if (isError) {
+			this.markWorkReached();
 			this.task.retries += 1;
-			if (this.isCoding() && verification) this.settleVerification(run, false, at);
-			return this.result(verification ? "verification failed; recovery active" : `${toolName} failed; milestone remains open`);
+			if (run) this.settleCheck(run, false, at);
+			return this.result(run ? "check failed; recovery observed" : `${toolName} failed; work remains active`);
 		}
-
-		if (this.isCoding()) {
-			if (toolName === "edit" || toolName === "write") this.observeChange(at);
-			if (verification) this.settleVerification(run, true, at);
-		} else if (this.task.category === "investigation" && toolName === "read") {
-			this.complete("inspect", at);
-		} else if (this.task.category === "testing" && verification) {
-			this.complete("run", at);
-			this.activateOnly("resolve");
-		}
-		return this.result(this.endReason(toolName, args, verification));
-	}
-
-	agentStart() {
-		if (!this.task || this.terminal()) return this.result("ignored: no running task");
-		const finalize = this.milestone("finalize");
-		if (finalize?.state === MilestoneState.ACTIVE) finalize.state = MilestoneState.PENDING;
-		return this.result("agent run started");
+		if (toolName === "edit" || toolName === "write") this.observeChange();
+		this.markWorkReached();
+		if (run) this.settleCheck(run, true, at);
+		return this.result(this.endReason(toolName, args, Boolean(run)));
 	}
 
 	agentEnd() {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
+		this.complete("understand");
+		this.complete("work");
 		this.activateOnly("finalize");
-		return this.result("agent run ended; awaiting final settlement");
+		return this.result("operational work ended; finalization active");
 	}
 
 	settle(at = this.now()) {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
 		if (this.task.terminalError) return this.fail(at);
-
-		this.complete("finalize", at);
-		if (this.isCoding() && this.hasCompleteCodingEvidence()) {
-			// A normal settlement reconciles transient recovery/work states only when
-			// the current modification generation has a successful verification.
-			for (const phase of ["understand", "work", "verify", "finalize"]) this.complete(phase, at);
-			this.task.recoveryActive = false;
-			this.task.state = TaskState.DONE;
-		} else {
-			// Do not manufacture a verified result for an unverified coding task.
-			this.task.state = TaskState.INCOMPLETE;
-		}
-		return this.result(this.task.state === TaskState.DONE ? "normal settlement reconciled to 4/4" : "normal settlement lacks required evidence");
+		for (const phase of ["understand", "work", "finalize"]) this.complete(phase, at);
+		this.task.recoveryActive = false;
+		this.task.state = TaskState.DONE;
+		return this.result("normal lifecycle settled to 3/3");
 	}
 
 	turnEnd(stopReason) {
@@ -167,13 +135,14 @@ export class TaskProgressMonitor {
 	render(width = Number.POSITIVE_INFINITY, at = this.now()) {
 		if (!this.shouldRender(at) || !this.task) return undefined;
 		const { done, total, percent } = this.progress();
-		const full = `Forge Task  ${done}/${total}  ${percent}% | ${this.task.milestones.map((item) => `${marker(item.state)} ${item.label}`).join(" | ")}`;
+		const full = `Forge ${done}/${total} ${percent}% | ${this.task.milestones.map((item) => `${marker(item.state)} ${item.label}`).join(" | ")}`;
 		const compact = `Forge ${done}/${total} ${percent}% | ${this.task.milestones.map((item) => `${marker(item.state)}${item.label[0]}`).join(" ")}`;
 		const rows = [fit(full, compact, width)];
-		if (this.task.recoveryActive) rows.push(fit(`Recovery #${this.task.recoveryCount} — correcting after failed verification`, `Recovery #${this.task.recoveryCount}`, width));
-		else if (this.task.state === TaskState.DONE) rows.push(fit("DONE", "DONE", width));
-		else if (this.task.state === TaskState.INCOMPLETE) rows.push(fit("INCOMPLETE — verification evidence required", "INCOMPLETE", width));
-		else if (done >= 2) rows.push(fit(this.eta(at) ?? "ETA unavailable", "ETA unavailable", width));
+		if (this.task.state === TaskState.DONE) rows.push(fit(`DONE | Checks: ${this.task.checks}`, `DONE | Checks: ${this.task.checks}`, width));
+		else {
+			if (this.task.recoveryActive) rows.push(fit(`Recovery #${this.task.recoveryCount}`, `Recovery #${this.task.recoveryCount}`, width));
+			rows.push(fit(`Checks: ${this.task.checks}`, `Checks: ${this.task.checks}`, width));
+		}
 		return rows.slice(0, 3);
 	}
 
@@ -182,141 +151,85 @@ export class TaskProgressMonitor {
 		return structuredClone({ ...this.task, progress: this.progress() });
 	}
 
-	isCoding() { return ["feature", "bugfix", "refactor", "unknown", "mixed"].includes(this.task.category); }
-	hasCompleteCodingEvidence() {
-		// Do not trust a visual milestone or a stale cache at settlement.  The run
-		// record is the observed source of truth and is generation-scoped.
-		return this.task.changes > 0 && this.task.verificationRuns.some((run) =>
-			run.started && run.settled && run.success === true && run.generationId === this.task.changeGeneration,
-		) && this.milestone("understand")?.state === MilestoneState.DONE;
-	}
-
-	startVerification(toolCallId, at) {
-		const id = toolCallId ?? `legacy-verification-${++this.task.verificationSequence}`;
-		// Starts are idempotent because a host may replay a lifecycle notification.
-		if (!this.task.verificationRuns.some((run) => run.toolCallId === id)) {
-			this.task.verificationRuns.push({ toolCallId: id, generationId: this.task.changeGeneration, started: true, settled: false, success: undefined, startedAt: at });
+	startCheck(toolCallId, at) {
+		const id = toolCallId ?? `legacy-check-${++this.task.checkSequence}`;
+		let run = this.task.checkRuns.find((item) => item.toolCallId === id);
+		if (!run) {
+			run = { toolCallId: id, generationId: this.task.changeGeneration, started: true, settled: false, success: undefined, startedAt: at };
+			this.task.checkRuns.push(run);
+			this.task.verificationRuns = this.task.checkRuns;
 		}
+		this.task.checks = CheckState.RUNNING;
 		this.task.recoveryActive = false;
-		this.task.state = TaskState.VERIFYING;
-		// Even a second verifier after a previous PASS is actively running.
-		this.activateOnly("verify", true);
 	}
 
-	verificationRun(toolCallId, args) {
-		if (toolCallId !== undefined) return this.task.verificationRuns.find((run) => run.toolCallId === toolCallId && !run.settled);
-		// Compatibility for direct core callers.  The production adapter always
-		// supplies toolCallId, so it can never accidentally bind unrelated bash runs.
+	checkRun(toolCallId, args) {
+		if (toolCallId !== undefined) return this.task.checkRuns.find((run) => run.toolCallId === toolCallId && !run.settled);
 		if (classifyBashCommand(args?.command) !== "verification") return undefined;
-		return [...this.task.verificationRuns].reverse().find((run) => !run.settled) ?? this.implicitVerification(args);
+		return [...this.task.checkRuns].reverse().find((run) => !run.settled) ?? this.implicitCheck();
 	}
 
-	implicitVerification() {
-		const id = `legacy-verification-${++this.task.verificationSequence}`;
-		const run = { toolCallId: id, generationId: this.task.changeGeneration, started: true, settled: false, success: undefined, startedAt: this.now() };
-		this.task.verificationRuns.push(run);
+	implicitCheck() {
+		const run = { toolCallId: `legacy-check-${++this.task.checkSequence}`, generationId: this.task.changeGeneration, started: true, settled: false, success: undefined, startedAt: this.now() };
+		this.task.checkRuns.push(run);
+		this.task.verificationRuns = this.task.checkRuns;
 		return run;
 	}
 
-	settleVerification(run, success, at) {
+	settleCheck(run, success, at) {
 		run.settled = true;
 		run.success = success;
 		run.settledAt = at;
 		if (!success) {
-			this.enterRecovery(at);
+			this.task.checks = CheckState.FAIL;
+			this.task.recoveryCount += 1;
+			this.task.recoveryActive = true;
 			return;
 		}
-		// A verifier that started before a later edit is valid evidence for its own
-		// generation only; it must not complete Verify for the newer generation.
-		if (run.generationId === this.task.changeGeneration && this.task.changes > 0) {
-			this.task.verifiedGeneration = run.generationId;
-			this.complete("verify", at);
-		}
+		this.task.checks = run.generationId === this.task.changeGeneration ? CheckState.PASS : CheckState.NOT_OBSERVED;
 		this.task.recoveryActive = false;
-		this.task.state = TaskState.RUNNING;
 	}
 
-	observeChange(at) {
+	observeChange() {
 		this.task.changes += 1;
 		this.task.changeGeneration += 1;
-		this.task.verifiedGeneration = -1;
 		this.task.recoveryActive = false;
-		this.complete("work", at);
-		// A successful verifier applies only to the generation it observed.
-		// A later edit/write makes Verify pending again and requires a new run.
-		const verify = this.milestone("verify");
-		if (verify?.state === MilestoneState.DONE) verify.state = MilestoneState.PENDING;
-		this.activateOnly("verify");
-		this.task.state = TaskState.RUNNING;
-	}
-
-	enterRecovery() {
-		this.task.recoveryCount += 1;
-		this.task.recoveryActive = true;
-		this.task.verifiedGeneration = -1;
-		const verify = this.milestone("verify");
-		if (verify?.state === MilestoneState.DONE) verify.state = MilestoneState.PENDING;
+		// A PASS belongs only to the generation in which it was observed.
+		if (this.task.checks === CheckState.PASS) this.task.checks = CheckState.NOT_OBSERVED;
 		this.activateOnly("work");
-		this.task.state = TaskState.RUNNING;
 	}
 
-	phaseIndex(phase) {
-		const aliases = this.isCoding()
-			? { understand: 0, work: 1, verify: 2, finalize: 3 }
-			: this.task.category === "investigation"
-				? { understand: 0, inspect: 1, conclude: 2, finalize: 3 }
-				: { understand: 0, run: 1, resolve: 2, finalize: 3 };
-		return aliases[phase] ?? -1;
-	}
+	phaseIndex(phase) { return ({ understand: 0, work: 1, finalize: 2 })[phase] ?? -1; }
 	milestone(phase) { return this.task?.milestones[this.phaseIndex(phase)]; }
-	activateOnly(phase, reactivate = false) {
+	activateOnly(phase) {
 		const target = this.milestone(phase);
-		if (!target || target.state === MilestoneState.DONE && phase !== "work" && !reactivate) return;
+		if (!target || target.state === MilestoneState.DONE) return;
 		for (const milestone of this.task.milestones) if (milestone !== target && milestone.state === MilestoneState.ACTIVE) milestone.state = MilestoneState.PENDING;
 		target.state = MilestoneState.ACTIVE;
 	}
-	complete(phase, at) {
+	markWorkReached() { this.task.progressFloor = Math.max(this.task.progressFloor, 2); }
+	complete(phase, at = this.now()) {
 		const item = this.milestone(phase);
-		if (!item || item.state === MilestoneState.DONE || item.state === MilestoneState.SKIPPED) return;
+		if (!item || item.state === MilestoneState.DONE) return;
 		item.state = MilestoneState.DONE;
 		item.completedAt = at;
-		this.task.progressFloor = Math.max(this.task.progressFloor, this.rawDoneCount());
 	}
 	progress() {
-		// One atomic state snapshot produces both fields.  progressFloor represents
-		// completed plan evidence retained during a recovery; it and the milestone
-		// states are read once before deriving both counter and percentage.
 		const milestones = this.task?.milestones ?? [];
-		const floor = this.task?.progressFloor ?? 0;
-		const done = Math.max(milestones.filter((item) => item.state === MilestoneState.DONE).length, floor);
+		const done = Math.max(milestones.filter((item) => item.state === MilestoneState.DONE).length, this.task?.progressFloor ?? 0);
 		const total = milestones.length;
 		const percent = total ? Math.round((done / total) * 100) : 0;
-		if (total === 4 && percent !== done * 25) throw new Error(`Task Progress invariant violated: ${done}/4 cannot be ${percent}%`);
+		if (total === 3 && percent !== [0, 33, 67, 100][done]) throw new Error(`Task Progress invariant violated: ${done}/3 cannot be ${percent}%`);
 		return { done, total, percent };
 	}
-	rawDoneCount() { return this.task?.milestones.filter((item) => item.state === MilestoneState.DONE).length ?? 0; }
-	terminal() { return [TaskState.DONE, TaskState.FAILED, TaskState.INCOMPLETE].includes(this.task?.state); }
+	terminal() { return [TaskState.DONE, TaskState.FAILED].includes(this.task?.state); }
 	startReason(toolName, args) {
-		if (toolName === "read") return "operational read started; understanding complete";
-		if (toolName === "edit" || toolName === "write") return "change started; work active";
-		if (toolName === "bash" && classifyBashCommand(args?.command) === "verification") return "verification command started";
+		if (toolName === "bash" && classifyBashCommand(args?.command) === "verification") return "check command started; work remains active";
 		return "operational tool started; understanding complete";
 	}
-	endReason(toolName, args, verification = toolName === "bash" && classifyBashCommand(args?.command) === "verification") {
-		if (toolName === "read") return "read succeeded";
-		if (toolName === "edit" || toolName === "write") return "change candidate ready for verification";
-		if (toolName === "bash" && verification) return "verification lifecycle settled";
-		return `${toolName} succeeded; no milestone evidence`;
-	}
-	eta(at) {
-		if (!this.task || this.task.retries > 0 || this.progress().done < 2) return undefined;
-		const completed = this.task.milestones.filter((item) => item.completedAt !== undefined);
-		const history = at - this.task.startedAt;
-		if (completed.length < 2 || history < this.etaMinHistoryMs) return undefined;
-		const remaining = this.progress().total - this.progress().done;
-		if (remaining <= 0) return undefined;
-		const estimate = (history / this.progress().done) * remaining;
-		return `ETA ~${minutes(estimate * 0.75)}–${minutes(estimate * 1.5)}`;
+	endReason(toolName, args, check) {
+		if (toolName === "bash" && check) return "check lifecycle settled";
+		return `${toolName} succeeded; work remains active`;
 	}
 	result(reason) { return { reason, snapshot: this.snapshot() }; }
 }
@@ -329,4 +242,3 @@ function fit(full, compact, width) {
 	const minimal = compact.startsWith("Forge ") ? compact.match(/^Forge \d+\/\d+ \d+%/)?.[0] ?? "Forge" : compact;
 	return minimal.length <= safeWidth ? minimal : minimal.slice(0, safeWidth);
 }
-function minutes(milliseconds) { return `${Math.max(1, Math.round(milliseconds / 60_000))} min`; }

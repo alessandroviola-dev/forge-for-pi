@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Forge for Pi 1.0.0 is the supported public release.
+Forge for Pi 1.0.1 is the supported public release.
 
 ## Reporting
 

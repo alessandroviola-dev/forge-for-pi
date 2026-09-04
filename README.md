@@ -14,13 +14,19 @@ Forge adds host-side safeguards and observability invisibly to the model. It add
 pi
 
 # Forge
-FORGE_FOR_PI=1 pi --no-skills
+Forge
 
 # Forge with optional local telemetry
-FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-skills
+Forgetrace
 ```
 
-`FORGE_FOR_PI` is opt-in. Without it, Forge's extension entrypoint makes no registrations, so plain `pi` remains vanilla.
+The installer creates the user-local `Forge` and `Forgetrace` launchers in `~/.local/bin` and adds its clearly marked PATH block only when needed. `Forge` is the standard launcher; `Forgetrace` additionally enables local metadata-only telemetry. Plain `pi` remains vanilla.
+
+For advanced/manual use, Forge remains opt-in:
+
+```sh
+FORGE_FOR_PI=1 pi --no-skills
+```
 
 ## Components
 
@@ -28,10 +34,10 @@ FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-skills
 - **Safe Snapshot Edit** provides scoped snapshots, seen-range validation, stale protection, a no-op guard, and atomic edits.
 - **Reactive Diagnostics** appends newly introduced local diagnostics after writes without adding a tool.
 - **Context Intelligence** conservatively packs large prior tool evidence host-side when it materially saves context.
-- **Task Progress Monitor** renders real observed task progress: **Understand → Work → Verify → Finalize**. Verify is never marked DONE without successful verification evidence for the current change.
+- **Task Progress Monitor** renders real observed lifecycle progress: **Understand → Work → Finalize**. Verification is tracked separately as host-side Checks (`not observed`, `running`, `PASS`, or `FAIL`) and never changes the progress counter.
 - **Optional Telemetry** writes local metadata-only measurements only when `FORGE_FOR_PI_TRACE=1`.
 
-Task Progress Monitor is host/TUI-only and has zero model-facing token overhead. It uses observable lifecycle evidence; it does not claim semantic proof of absolute task completeness.
+Task Progress Monitor is host/TUI-only and has zero model-facing token overhead. Its three-step progress reflects lifecycle advancement, while Checks report observed verification evidence separately; neither claims semantic proof of absolute task completeness.
 
 ## Install
 
@@ -42,9 +48,9 @@ Forge is verified with Pi 0.84.4.
 ./scripts/verify-install.sh
 ```
 
-The installer copies the extension to `~/.pi/agent/extensions/forge-for-pi/`, backs up a previous Forge installation outside extension discovery, and does not touch `auth.json`, `models.json`, skills, or unrelated user configuration. It is safe to run again.
+The installer copies the extension to `~/.pi/agent/extensions/forge-for-pi/`, creates Forge-managed launchers in `~/.local/bin`, backs up a previous Forge installation outside extension discovery, and does not touch `auth.json`, `models.json`, skills, or unrelated user configuration. It will not overwrite a non-Forge launcher and is safe to run again.
 
-To remove only the installed Forge extension:
+To remove Forge, its managed launchers, and only its managed PATH block:
 
 ```sh
 ./scripts/uninstall.sh
