@@ -3,6 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { CheckState, MilestoneState, TaskProgressMonitor, TaskState, classifyBashCommand, classifyTask } from "../src/forge-for-pi/task-progress-monitor-core.mjs";
 
+const UI = Object.freeze({
+	understand: "▶ Understand | ○ Work | ○ Finalize",
+	work: "✓ Understand | ▶ Work | ○ Finalize",
+	finalize: "✓ Understand | ✓ Work | ▶ Finalize",
+	done: "✓ Understand | ✓ Work | ✓ Finalize",
+});
+
 function monitor(options = {}) {
 	let now = 0;
 	return { advance(ms) { now += ms; return now; }, subject: new TaskProgressMonitor({ now: () => now, minVisibleMs: 0, ...options }) };
@@ -10,86 +17,69 @@ function monitor(options = {}) {
 function milestone(subject, label) { return subject.snapshot().milestones.find((item) => item.label === label); }
 function start(subject, tool, args = {}, id) { return subject.toolStart(tool, args, undefined, id); }
 function end(subject, tool, args = {}, error = false, id) { return subject.toolEnd(tool, args, error, undefined, id); }
-function settle(subject) { subject.agentEnd(); subject.settle(); }
-function progress(subject) { return subject.snapshot().progress; }
-function activeCount(subject) { return subject.snapshot().milestones.filter((item) => item.state === MilestoneState.ACTIVE).length; }
 function rows(subject, width = 120) { return subject.render(width) ?? []; }
 
-// Lifecycle progress is intentionally independent from check evidence.
-test("normal lifecycle uses the immutable Understand, Work, Finalize plan from 0 to 3/3", () => {
+// The UI intentionally exposes lifecycle state plus only a measured output rate.
+test("renderer has exactly the four minimal lifecycle rows", () => {
 	const { subject } = monitor();
 	subject.begin("Add a deterministic greeting feature");
-	assert.deepEqual(progress(subject), { done: 0, total: 3, percent: 0 });
-	assert.deepEqual(subject.snapshot().milestones.map((item) => item.label), ["Understand", "Work", "Finalize"]);
+
 	start(subject, "read");
-	assert.equal(milestone(subject, "Understand").state, MilestoneState.DONE);
-	assert.equal(milestone(subject, "Work").state, MilestoneState.ACTIVE);
-	assert.deepEqual(progress(subject), { done: 1, total: 3, percent: 33 });
-	assert.ok(rows(subject).length > 0);
+	assert.deepEqual(rows(subject), [UI.understand]);
+
+	start(subject, "edit");
+	assert.deepEqual(rows(subject), [UI.work]);
+
 	subject.agentEnd();
-	assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-	assert.equal(milestone(subject, "Finalize").state, MilestoneState.ACTIVE);
+	assert.deepEqual(rows(subject), [UI.finalize]);
+
 	subject.settle();
-	assert.deepEqual(progress(subject), { done: 3, total: 3, percent: 100 });
+	assert.deepEqual(rows(subject), [UI.done]);
 	assert.equal(subject.snapshot().state, TaskState.DONE);
-	assert.deepEqual(rows(subject), ["Forge 3/3 100% | ✓ Understand | ✓ Work | ✓ Finalize", "DONE | Checks: not observed"]);
 });
 
-test("edit, test, edit, test cycles remain Work and leave progress untouched", () => {
+test("initial reads and inspection commands leave Understand active", () => {
 	const { subject } = monitor();
-	subject.begin("Fix parser regression");
-	start(subject, "edit"); end(subject, "edit");
-	start(subject, "bash", { command: "npm test" }, "test-1");
-	assert.equal(subject.snapshot().checks, CheckState.RUNNING);
-	end(subject, "bash", { command: "npm test" }, false, "test-1");
-	assert.equal(subject.snapshot().checks, CheckState.PASS);
-	start(subject, "edit"); end(subject, "edit");
-	assert.equal(subject.snapshot().checks, CheckState.NOT_OBSERVED);
-	start(subject, "bash", { command: "npm test" }, "test-2");
-	end(subject, "bash", { command: "npm test" }, false, "test-2");
-	assert.equal(subject.snapshot().checks, CheckState.PASS);
-	assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-	assert.equal(milestone(subject, "Work").state, MilestoneState.ACTIVE);
-	assert.equal(activeCount(subject), 1);
-	settle(subject);
-	assert.deepEqual(progress(subject), { done: 3, total: 3, percent: 100 });
+	subject.begin("Investigate the parser");
+
+	start(subject, "read"); end(subject, "read");
+	start(subject, "read"); end(subject, "read");
+	start(subject, "bash", { command: "rg parser src" }); end(subject, "bash", { command: "rg parser src" });
+
+	assert.equal(milestone(subject, "Understand").state, MilestoneState.ACTIVE);
+	assert.equal(milestone(subject, "Work").state, MilestoneState.PENDING);
+	assert.deepEqual(rows(subject), [UI.understand]);
+	assert.equal(subject.snapshot().progress, undefined);
 });
 
-test("PASS followed by an edit requires an observed recheck without changing progress", () => {
+test("only a direct edit or write request moves Understand to Work", () => {
+	for (const tool of ["edit", "write"]) {
+		const { subject } = monitor();
+		subject.begin("Implement the change");
+		start(subject, "read");
+		start(subject, tool);
+
+		assert.equal(milestone(subject, "Understand").state, MilestoneState.DONE);
+		assert.equal(milestone(subject, "Work").state, MilestoneState.ACTIVE);
+		assert.deepEqual(rows(subject), [UI.work]);
+	}
+});
+
+test("checks and recovery remain internal and never add UI rows", () => {
 	const { subject } = monitor();
 	subject.begin("Add validation");
 	start(subject, "edit"); end(subject, "edit");
-	start(subject, "bash", { command: "pytest" }, "first"); end(subject, "bash", { command: "pytest" }, false, "first");
-	assert.equal(subject.snapshot().checks, CheckState.PASS);
-	start(subject, "write"); end(subject, "write");
-	assert.equal(subject.snapshot().checks, CheckState.NOT_OBSERVED);
-	start(subject, "bash", { command: "pytest" }, "second"); end(subject, "bash", { command: "pytest" }, false, "second");
-	assert.equal(subject.snapshot().checks, CheckState.PASS);
-	assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-});
-
-test("failed checks create secondary recovery while Work remains the only active milestone", () => {
-	const { subject } = monitor();
-	subject.begin("Fix login bug");
-	start(subject, "edit"); end(subject, "edit");
 	start(subject, "bash", { command: "pytest" }, "failed"); end(subject, "bash", { command: "pytest" }, true, "failed");
+
 	assert.equal(subject.snapshot().checks, CheckState.FAIL);
-	assert.equal(subject.snapshot().recoveryCount, 1);
 	assert.equal(subject.snapshot().recoveryActive, true);
-	assert.equal(activeCount(subject), 1);
-	assert.ok(rows(subject).includes("Recovery #1"));
-	assert.ok(rows(subject).includes("Checks: FAIL"));
-	start(subject, "edit"); end(subject, "edit");
-	start(subject, "bash", { command: "pytest" }, "passed"); end(subject, "bash", { command: "pytest" }, false, "passed");
-	assert.equal(subject.snapshot().checks, CheckState.PASS);
-	assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-	settle(subject);
-	assert.ok(rows(subject).includes("DONE | Checks: PASS"));
+	assert.deepEqual(rows(subject), [UI.work]);
+	assert.doesNotMatch(rows(subject).join("\n"), /(?:Checks|Recovery|\d\/3|%|ETA)/);
 });
 
-test("many consecutive verifiers are secondary observations and never alter Work progress", () => {
+test("verification cycles preserve Work and do not affect the renderer", () => {
 	const { subject } = monitor();
-	subject.begin("Refactor parser");
+	subject.begin("Fix deterministic validation");
 	start(subject, "edit"); end(subject, "edit");
 	for (const [index, command] of ["npm test", "npm run lint", "tsc --noEmit", "pytest"].entries()) {
 		const id = `check-${index}`;
@@ -97,57 +87,76 @@ test("many consecutive verifiers are secondary observations and never alter Work
 		assert.equal(subject.snapshot().checks, CheckState.RUNNING);
 		end(subject, "bash", { command }, false, id);
 		assert.equal(subject.snapshot().checks, CheckState.PASS);
-		assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-		assert.equal(activeCount(subject), 1);
+		assert.deepEqual(rows(subject), [UI.work]);
 	}
 });
 
-test("a normal lifecycle with no test never invents PASS", () => {
-	const { subject } = monitor();
-	subject.begin("Implement a small feature");
-	start(subject, "read"); end(subject, "read");
-	assert.ok(rows(subject).length > 0);
-	settle(subject);
-	assert.equal(subject.snapshot().checks, CheckState.NOT_OBSERVED);
-	assert.ok(rows(subject).includes("DONE | Checks: not observed"));
+test("uses finalized output usage and generation time for tok/s", () => {
+	const { subject, advance } = monitor();
+	subject.begin("Add output-rate status");
+	start(subject, "read");
+	subject.turnStart(0);
+	advance(2_000);
+	subject.assistantMessageEnd({ role: "assistant", usage: { input: 999, output: 82, cacheRead: 888, cacheWrite: 777 } });
+	assert.deepEqual(rows(subject), ["▶ Understand | ○ Work | ○ Finalize | avg 41 tok/s"]);
+	assert.deepEqual(subject.snapshot().generation, { status: "measured", outputTokens: 82, durationMs: 2_000, tokensPerSecond: 41 });
 });
 
-test("short tasks do not leave a persistent widget before the reveal threshold", () => {
+test("missing, zero, or zero-duration output usage never invents a rate", () => {
+	for (const message of [
+		{ role: "assistant" },
+		{ role: "assistant", usage: { output: 0 } },
+		{ role: "assistant", usage: { output: Number.NaN } },
+		{ role: "assistant", usage: { output: Number.POSITIVE_INFINITY } },
+		{ role: "assistant", usage: { output: 10 } },
+	]) {
+		const { subject } = monitor();
+		subject.begin("Add output-rate status");
+		start(subject, "read");
+		subject.turnStart(0);
+		subject.assistantMessageEnd(message, message.usage?.output === 10 ? 0 : 2_000);
+		assert.deepEqual(rows(subject), ["▶ Understand | ○ Work | ○ Finalize | tok/s …"]);
+		assert.equal(Number.isFinite(subject.snapshot().generation.tokensPerSecond), false);
+		assert.doesNotMatch(rows(subject)[0], /(?:NaN|Infinity)/);
+	}
+});
+
+test("multiple turns clear stale rates and exclude tool time", () => {
+	const { subject, advance } = monitor();
+	subject.begin("Add output-rate status");
+	start(subject, "read");
+	subject.turnStart(0);
+	advance(1_000);
+	subject.assistantMessageEnd({ role: "assistant", usage: { output: 20 } });
+	assert.match(rows(subject)[0], /avg 20 tok\/s$/);
+	// A tool between generations does not change the completed model rate.
+	start(subject, "bash", { command: "npm test" }, "check");
+	advance(10_000);
+	end(subject, "bash", { command: "npm test" }, false, "check");
+	assert.match(rows(subject)[0], /avg 20 tok\/s$/);
+	// The next model turn has no reliable completed measurement yet.
+	subject.turnStart(11_000);
+	assert.deepEqual(rows(subject), ["▶ Understand | ○ Work | ○ Finalize | tok/s …"]);
+	advance(500);
+	subject.assistantMessageEnd({ role: "assistant", usage: { output: 30 } });
+	assert.match(rows(subject)[0], /avg 60 tok\/s$/);
+	assert.equal(subject.snapshot().generation.durationMs, 500);
+});
+
+test("short tasks remain suppressed", () => {
 	const { subject } = monitor({ minVisibleMs: 2_500 });
-	subject.begin("Add tiny change");
+	subject.begin("Tiny change");
 	start(subject, "read"); end(subject, "read");
-	settle(subject);
+	subject.agentEnd(); subject.settle();
 	assert.equal(subject.render(), undefined);
 });
 
-test("long tasks reveal lifecycle progress, Checks running, and width-safe rows", () => {
+test("long inspection reveals the Understand row without inventing progress", () => {
 	const { subject, advance } = monitor({ minVisibleMs: 2_500 });
-	subject.begin("Implement a long feature");
-	start(subject, "read"); end(subject, "read");
+	subject.begin("Investigate a regression");
+	start(subject, "read");
 	advance(2_500);
-	start(subject, "edit"); end(subject, "edit");
-	start(subject, "bash", { command: "npm test" }, "long");
-	assert.ok(rows(subject).includes("Forge 2/3 67% | ✓ Understand | ▶ Work | ○ Finalize"));
-	assert.ok(rows(subject).includes("Checks: running"));
-	assert.ok(rows(subject, 31).every((row) => row.length <= 31));
-	assert.equal(activeCount(subject), 1);
-});
-
-test("counter, percentage, and ACTIVE invariants are fixed at 0/3, 1/3, 2/3, 3/3", () => {
-	const { subject } = monitor();
-	subject.begin("Unknown task");
-	assert.deepEqual(progress(subject), { done: 0, total: 3, percent: 0 });
-	start(subject, "bash", { command: "echo work" });
-	assert.deepEqual(progress(subject), { done: 1, total: 3, percent: 33 });
-	end(subject, "bash", { command: "echo work" });
-	assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-	assert.equal(activeCount(subject), 1);
-	subject.agentEnd();
-	assert.deepEqual(progress(subject), { done: 2, total: 3, percent: 67 });
-	assert.equal(activeCount(subject), 1);
-	subject.settle();
-	assert.deepEqual(progress(subject), { done: 3, total: 3, percent: 100 });
-	assert.equal(activeCount(subject), 0);
+	assert.deepEqual(rows(subject, 1), [UI.understand]);
 });
 
 test("classification and check command detection remain conservative and host-side", () => {

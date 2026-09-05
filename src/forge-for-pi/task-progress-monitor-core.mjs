@@ -2,8 +2,8 @@ export const TaskState = Object.freeze({ RUNNING: "RUNNING", DONE: "DONE", FAILE
 export const MilestoneState = Object.freeze({ PENDING: "PENDING", ACTIVE: "ACTIVE", DONE: "DONE", BLOCKED: "BLOCKED", SKIPPED: "SKIPPED" });
 export const CheckState = Object.freeze({ NOT_OBSERVED: "not observed", RUNNING: "running", PASS: "PASS", FAIL: "FAIL" });
 
-// Task progress deliberately measures lifecycle progress, not semantic proof.
-// Checks and recovery are observed separately from this immutable three-step plan.
+// The monitor exposes only the observed lifecycle state, never a synthetic completion metric.
+// Check and recovery evidence remains host-side and does not affect the minimal UI.
 const TEMPLATES = Object.freeze({
 	feature: ["Understand", "Work", "Finalize"],
 	bugfix: ["Understand", "Work", "Finalize"],
@@ -33,12 +33,11 @@ export function classifyBashCommand(command) {
 	return typeof command === "string" && TEST_COMMAND.test(command) ? "verification" : "other";
 }
 
-/** Evidence-only, host-side lifecycle progress. Checks never affect progress. */
+/** Evidence-only, host-side lifecycle state. Check evidence never changes it. */
 export class TaskProgressMonitor {
-	constructor({ now = () => Date.now(), minVisibleMs = 2_500, etaMinHistoryMs = 8_000 } = {}) {
+	constructor({ now = () => Date.now(), minVisibleMs = 2_500 } = {}) {
 		this.now = now;
 		this.minVisibleMs = minVisibleMs;
-		this.etaMinHistoryMs = etaMinHistoryMs;
 		this.task = undefined;
 	}
 
@@ -53,8 +52,8 @@ export class TaskProgressMonitor {
 			checkRuns: [], verificationRuns: [], checkSequence: 0,
 			checks: CheckState.NOT_OBSERVED,
 			retries: 0, recoveryCount: 0, recoveryActive: false, terminalError: false,
-			// Work may remain ACTIVE through cycles after its lifecycle step is reached.
-			progressFloor: 0, visible: false,
+			generation: { status: "idle" },
+			visible: false,
 		};
 		return this.result("task classified; awaiting operational evidence");
 	}
@@ -65,8 +64,12 @@ export class TaskProgressMonitor {
 	toolStart(toolName, args = {}, at = this.now(), toolCallId) {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
 		this.task.operationCount += 1;
-		this.complete("understand", at);
-		this.activateOnly("work");
+		// Inspection is deliberately not treated as completed understanding. Only a
+		// direct mutation request is concrete operational-work evidence.
+		if (toolName === "edit" || toolName === "write") {
+			this.complete("understand", at);
+			this.activateOnly("work");
+		}
 		if (toolName === "bash" && classifyBashCommand(args?.command) === "verification") this.startCheck(toolCallId, at);
 		return this.result(this.startReason(toolName, args));
 	}
@@ -81,13 +84,11 @@ export class TaskProgressMonitor {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
 		const run = toolName === "bash" ? this.checkRun(toolCallId, args) : undefined;
 		if (isError) {
-			this.markWorkReached();
 			this.task.retries += 1;
 			if (run) this.settleCheck(run, false, at);
-			return this.result(run ? "check failed; recovery observed" : `${toolName} failed; work remains active`);
+			return this.result(run ? "check failed; recovery observed" : `${toolName} failed; lifecycle state unchanged`);
 		}
 		if (toolName === "edit" || toolName === "write") this.observeChange();
-		this.markWorkReached();
 		if (run) this.settleCheck(run, true, at);
 		return this.result(this.endReason(toolName, args, Boolean(run)));
 	}
@@ -106,7 +107,30 @@ export class TaskProgressMonitor {
 		for (const phase of ["understand", "work", "finalize"]) this.complete(phase, at);
 		this.task.recoveryActive = false;
 		this.task.state = TaskState.DONE;
-		return this.result("normal lifecycle settled to 3/3");
+		return this.result("normal lifecycle settled");
+	}
+
+	turnStart(timestamp) {
+		if (!this.task || this.terminal()) return this.result("ignored: no running task");
+		// Pi 0.84.4 exposes this timestamp on turn_start. Do not substitute a
+		// local estimate if it is absent: the rate must remain unavailable.
+		this.task.generation = Number.isFinite(timestamp) ? { status: "pending", startedAt: timestamp } : { status: "unavailable" };
+		return this.result("model turn started");
+	}
+
+	assistantMessageEnd(message, endedAt = this.now()) {
+		if (!this.task || this.terminal() || message?.role !== "assistant") return this.result("ignored: no running task or assistant message");
+		const startedAt = this.task.generation?.startedAt;
+		const outputTokens = message?.usage?.output;
+		const durationMs = endedAt - startedAt;
+		// Pi only guarantees final assistant usage. Use its output field alone;
+		// input and cache usage, as well as all subsequent tool time, are excluded.
+		if (Number.isFinite(outputTokens) && outputTokens > 0 && Number.isFinite(startedAt) && Number.isFinite(endedAt) && durationMs > 0) {
+			this.task.generation = { status: "measured", outputTokens, durationMs, tokensPerSecond: outputTokens / (durationMs / 1_000) };
+		} else {
+			this.task.generation = { status: "unavailable" };
+		}
+		return this.result("assistant output usage observed");
 	}
 
 	turnEnd(stopReason) {
@@ -118,8 +142,6 @@ export class TaskProgressMonitor {
 
 	fail(at = this.now()) {
 		if (!this.task || this.terminal()) return this.result("ignored: no running task");
-		const active = this.task.milestones.find((milestone) => milestone.state === MilestoneState.ACTIVE);
-		if (active) active.state = MilestoneState.BLOCKED;
 		this.task.state = TaskState.FAILED;
 		return this.result("agent ended with an error");
 	}
@@ -132,23 +154,16 @@ export class TaskProgressMonitor {
 		return this.task.visible;
 	}
 
-	render(width = Number.POSITIVE_INFINITY, at = this.now()) {
+	render(_width = Number.POSITIVE_INFINITY, at = this.now()) {
 		if (!this.shouldRender(at) || !this.task) return undefined;
-		const { done, total, percent } = this.progress();
-		const full = `Forge ${done}/${total} ${percent}% | ${this.task.milestones.map((item) => `${marker(item.state)} ${item.label}`).join(" | ")}`;
-		const compact = `Forge ${done}/${total} ${percent}% | ${this.task.milestones.map((item) => `${marker(item.state)}${item.label[0]}`).join(" ")}`;
-		const rows = [fit(full, compact, width)];
-		if (this.task.state === TaskState.DONE) rows.push(fit(`DONE | Checks: ${this.task.checks}`, `DONE | Checks: ${this.task.checks}`, width));
-		else {
-			if (this.task.recoveryActive) rows.push(fit(`Recovery #${this.task.recoveryCount}`, `Recovery #${this.task.recoveryCount}`, width));
-			rows.push(fit(`Checks: ${this.task.checks}`, `Checks: ${this.task.checks}`, width));
-		}
-		return rows.slice(0, 3);
+		const lifecycle = this.task.milestones.map((item) => `${marker(item.state)} ${item.label}`).join(" | ");
+		const speed = formatTokensPerSecond(this.task.generation);
+		return [speed === undefined ? lifecycle : `${lifecycle} | ${speed}`];
 	}
 
 	snapshot() {
 		if (!this.task) return undefined;
-		return structuredClone({ ...this.task, progress: this.progress() });
+		return structuredClone(this.task);
 	}
 
 	startCheck(toolCallId, at) {
@@ -191,6 +206,8 @@ export class TaskProgressMonitor {
 	}
 
 	observeChange() {
+		// Keep the lifecycle ordering intact for callers that report only completion.
+		this.complete("understand");
 		this.task.changes += 1;
 		this.task.changeGeneration += 1;
 		this.task.recoveryActive = false;
@@ -207,38 +224,28 @@ export class TaskProgressMonitor {
 		for (const milestone of this.task.milestones) if (milestone !== target && milestone.state === MilestoneState.ACTIVE) milestone.state = MilestoneState.PENDING;
 		target.state = MilestoneState.ACTIVE;
 	}
-	markWorkReached() { this.task.progressFloor = Math.max(this.task.progressFloor, 2); }
 	complete(phase, at = this.now()) {
 		const item = this.milestone(phase);
 		if (!item || item.state === MilestoneState.DONE) return;
 		item.state = MilestoneState.DONE;
 		item.completedAt = at;
 	}
-	progress() {
-		const milestones = this.task?.milestones ?? [];
-		const done = Math.max(milestones.filter((item) => item.state === MilestoneState.DONE).length, this.task?.progressFloor ?? 0);
-		const total = milestones.length;
-		const percent = total ? Math.round((done / total) * 100) : 0;
-		if (total === 3 && percent !== [0, 33, 67, 100][done]) throw new Error(`Task Progress invariant violated: ${done}/3 cannot be ${percent}%`);
-		return { done, total, percent };
-	}
 	terminal() { return [TaskState.DONE, TaskState.FAILED].includes(this.task?.state); }
 	startReason(toolName, args) {
-		if (toolName === "bash" && classifyBashCommand(args?.command) === "verification") return "check command started; work remains active";
-		return "operational tool started; understanding complete";
+		if (toolName === "bash" && classifyBashCommand(args?.command) === "verification") return "check command started; understanding remains active";
+		return toolName === "edit" || toolName === "write" ? "mutation started; work active" : "inspection observed; understanding remains active";
 	}
 	endReason(toolName, args, check) {
 		if (toolName === "bash" && check) return "check lifecycle settled";
-		return `${toolName} succeeded; work remains active`;
+		return toolName === "edit" || toolName === "write" ? `${toolName} succeeded; work remains active` : `${toolName} succeeded; understanding remains active`;
 	}
 	result(reason) { return { reason, snapshot: this.snapshot() }; }
 }
 
-function marker(state) { return state === MilestoneState.DONE ? "✓" : state === MilestoneState.ACTIVE ? "▶" : state === MilestoneState.BLOCKED ? "!" : "○"; }
-function fit(full, compact, width) {
-	const safeWidth = Math.max(1, Number.isFinite(width) ? Math.floor(width) : full.length);
-	if (full.length <= safeWidth) return full;
-	if (compact.length <= safeWidth) return compact;
-	const minimal = compact.startsWith("Forge ") ? compact.match(/^Forge \d+\/\d+ \d+%/)?.[0] ?? "Forge" : compact;
-	return minimal.length <= safeWidth ? minimal : minimal.slice(0, safeWidth);
+function formatTokensPerSecond(generation) {
+	if (generation?.status === "idle") return undefined;
+	const value = generation?.tokensPerSecond;
+	return Number.isFinite(value) && value > 0 ? `avg ${Math.round(value)} tok/s` : "tok/s …";
 }
+
+function marker(state) { return state === MilestoneState.DONE ? "✓" : state === MilestoneState.ACTIVE ? "▶" : "○"; }

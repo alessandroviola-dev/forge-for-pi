@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.2
+
+- Replaced the Task Progress Monitor metric display with one minimal lifecycle row: **Understand → Work → Finalize**.
+- Added host-side average output speed from final Pi assistant `usage.output` and model-turn timing; unavailable turns render `tok/s …`.
+- Kept the Understand → Work → Finalize state machine unchanged and added no model-facing behavior.
+- Removed progress counters, percentages, ETA, Checks, and Recovery from the widget UI.
+- Kept Understand active through reads and inspection; only a direct `edit` or `write` request advances the UI to Work.
+- Retained short-task suppression and host-side check/recovery observation without rendering those details.
+
 ## 1.0.1
 
 - Added official `Forge` and telemetry-enabled `Forgetrace` launchers with argument passthrough.

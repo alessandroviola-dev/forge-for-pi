@@ -118,6 +118,17 @@ export default function taskProgressMonitor(pi: ExtensionAPI): void {
 		const before = monitor.snapshot();
 		render("agent_start", before, monitor.agentStart());
 	});
+	pi.on("turn_start", (event) => {
+		const before = monitor.snapshot();
+		render("turn_start", before, monitor.turnStart(event.timestamp));
+	});
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		const before = monitor.snapshot();
+		// message_end is emitted when the final assistant message (and its final
+		// usage) is available, before this turn's tools are run.
+		render("message_end", before, monitor.assistantMessageEnd(event.message));
+	});
 	pi.on("tool_execution_start", (event) => {
 		const before = monitor.snapshot();
 		toolArgs.set(event.toolCallId, event.args as ToolArgs);
