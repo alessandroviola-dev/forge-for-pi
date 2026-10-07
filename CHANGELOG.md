@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Target current installation/verification at exactly Pi 1.0.4; retain original Pi 0.84.4 release/manual evidence.
+- Make Forge/Forgetrace base-only: unset sibling activation/trace/routing variables, disable automatic extension discovery and explicitly load one Forge entrypoint.
+- Add clean/contaminated launcher tests, offline real-Pi startup isolation qualification, and verifier source/install parity.
+
 ## 1.0.2
 
 - Replaced the Task Progress Monitor metric display with one minimal lifecycle row: **Understand → Work → Finalize**.

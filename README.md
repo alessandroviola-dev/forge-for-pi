@@ -22,11 +22,15 @@ Forgetrace
 
 The installer creates the user-local `Forge` and `Forgetrace` launchers in `~/.local/bin` and adds its clearly marked PATH block only when needed. `Forge` is the standard launcher; `Forgetrace` additionally enables local metadata-only telemetry. Plain `pi` remains vanilla.
 
+The managed launchers load only Forge's entrypoint with `--no-extensions --extension`, disabling automatic user/project/package and built-in extension discovery for that invocation. They remove inherited `FORGEJEV`, `FORGEJEV_TRACE`, `FORGEJEV_JEV_ROUTING`, `FORGEAPIS`, `FORGEAPIS_TRACE`, and `FORGEAPIS_JEV_ROUTING`. Forge tracing/snapshot options and the project cwd are preserved. Additional extensions require an explicit caller-supplied `--extension`; the base-only guarantee applies without such an intentional override.
+
 For advanced/manual use, Forge remains opt-in:
 
 ```sh
-FORGE_FOR_PI=1 pi --no-skills
+FORGE_FOR_PI=1 pi --no-extensions --extension "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/forge-for-pi/index.ts" --no-skills
 ```
+
+Plain `pi` is unchanged and does not activate these products in a clean environment. Explicit activation variables are still manual opt-ins; do not export them globally.
 
 ## Components
 
@@ -41,7 +45,7 @@ Task Progress Monitor is host/TUI-only and has zero model-facing token overhead.
 
 ## Install
 
-Forge is verified with Pi 0.84.4.
+The current installation target is exactly Pi 1.0.4.
 
 ```sh
 ./scripts/install.sh
@@ -73,7 +77,7 @@ The -25.90% figure applies only to the specific Smart Read benchmark. It does **
 
 - Reactive Diagnostics v1.0.0 is primarily Python/Ruff.
 - Task Progress Monitor relies on observable lifecycle evidence and cannot semantically prove absolute task completion.
-- Forge is verified on Pi 0.84.4.
+- The current verified installation/startup target is exactly Pi 1.0.4. Historical Pi 0.84.4 renderer evidence remains in `docs/MANUAL_VALIDATION.md`; no new manual TUI or live model validation is claimed.
 - Forge for Pi is independent and is not affiliated with or approved by Pi's maintainers.
 
 See `docs/` for architecture, design principles, and benchmark scope.

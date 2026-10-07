@@ -168,6 +168,7 @@ test("classification and check command detection remain conservative and host-si
 
 test("launchers remain the managed exec wrappers for Forge and Forgetrace", async () => {
 	const install = await readFile(new URL("../scripts/install.sh", import.meta.url), "utf8");
-	assert.match(install, /exec env FORGE_FOR_PI=1 pi --no-skills "\$@"/);
-	assert.match(install, /exec env FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-skills "\$@"/);
+	assert.match(install, /FORGE_FOR_PI=1 pi --no-extensions --extension /);
+	assert.match(install, /FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-extensions --extension /);
+	assert.match(install, /--no-skills "\$@"/);
 });

@@ -1,4 +1,21 @@
-# Release Checklist — 1.0.2
+# Release Checklist
+
+## Current main qualification — Pi 1.0.4
+
+The current installer/verifier target is exactly Pi 1.0.4. No new release, tag, archive or manual TUI/live-model evidence is produced by this qualification.
+
+- [ ] Full tracked unit/regression suite and deterministic task-progress validation pass locally.
+- [ ] Real Pi 1.0.4 startup/extension registration passes without a model request.
+- [ ] Forge/Forgetrace neutralize inherited sibling activation, trace and routing variables while preserving Forge options/cwd/arguments.
+- [ ] Only the Forge base entrypoint loads in Forge/Forgetrace; no sibling or second Forge copy loads.
+- [ ] Plain Pi stays unchanged and product-inactive in a clean environment.
+- [ ] Shell/Node syntax and privacy/secret/path scans pass.
+- [ ] Current SHA-256 manifest is regenerated and verifies, including new tests.
+- [ ] Install, verify-install and installed-source parity pass on Pi 1.0.4.
+
+## Historical release evidence — 1.0.2
+
+The following records the original release qualification, including its Pi 0.84.4 target. It is not rewritten as new Pi 1.0.4 manual or archive evidence.
 
 - [x] Public name: Forge for Pi
 - [x] Version file: 1.0.2

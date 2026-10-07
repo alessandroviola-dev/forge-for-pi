@@ -2,7 +2,7 @@
 set -euo pipefail
 
 VERSION="1.0.2"
-EXPECTED_PI_VERSION="0.84.4"
+EXPECTED_PI_VERSION="1.0.4"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 SOURCE_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/../src/forge-for-pi" && pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
@@ -94,13 +94,13 @@ write_launcher() {
     cat > "$temporary" <<'EOF'
 #!/usr/bin/env bash
 # Managed by Forge for Pi
-exec env FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-skills "$@"
+exec env -u FORGEJEV -u FORGEJEV_TRACE -u FORGEJEV_JEV_ROUTING -u FORGEAPIS -u FORGEAPIS_TRACE -u FORGEAPIS_JEV_ROUTING FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-extensions --extension "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/forge-for-pi/index.ts" --no-skills "$@"
 EOF
   else
     cat > "$temporary" <<'EOF'
 #!/usr/bin/env bash
 # Managed by Forge for Pi
-exec env FORGE_FOR_PI=1 pi --no-skills "$@"
+exec env -u FORGEJEV -u FORGEJEV_TRACE -u FORGEJEV_JEV_ROUTING -u FORGEAPIS -u FORGEAPIS_TRACE -u FORGEAPIS_JEV_ROUTING FORGE_FOR_PI=1 pi --no-extensions --extension "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/forge-for-pi/index.ts" --no-skills "$@"
 EOF
   fi
   chmod 755 "$temporary"
