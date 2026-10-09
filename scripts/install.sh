@@ -2,8 +2,8 @@
 set -euo pipefail
 
 VERSION="1.0.2"
-EXPECTED_PI_VERSION="1.0.4"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+source "$SCRIPT_DIR/pi-checks.sh"
 SOURCE_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/../src/forge-for-pi" && pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 EXTENSIONS_DIR="$AGENT_DIR/extensions"
@@ -80,6 +80,7 @@ configure_path() {
     return 0
   fi
 
+  CONFIG_UPDATED="$config"
   {
     [ ! -s "$config" ] || printf '\n'
     printf '%s\n%s\n%s\n' "$PATH_BLOCK_START" "$PATH_BLOCK_LINE" "$PATH_BLOCK_END"
@@ -107,9 +108,10 @@ EOF
   mv -f "$temporary" "$target"
 }
 
-command -v pi >/dev/null 2>&1 || fail "Forge for Pi requires pi on PATH."
-PI_VERSION="$(pi --version 2>/dev/null | tr -d '[:space:]')"
-[ "$PI_VERSION" = "$EXPECTED_PI_VERSION" ] || fail "Forge for Pi $VERSION is verified for Pi $EXPECTED_PI_VERSION; found ${PI_VERSION:-unknown}."
+for path in "$SOURCE_DIR" "$TARGET_DIR" "$BACKUP_DIR"; do assert_safe_tree "$path" || fail 'Unsafe source or destination.'; done
+assert_safe_path "$LAUNCHER_DIR" || fail 'Unsafe launcher directory.'
+[ ! -e "$TARGET_DIR" ] || [ -d "$TARGET_DIR" ] || fail 'Installation path is not a directory.'
+check_pi "$SOURCE_DIR/index.ts" || fail 'Pi functional compatibility checks failed.'
 [ -f "$SOURCE_DIR/index.ts" ] || fail "Release source is incomplete: $SOURCE_DIR/index.ts is missing."
 if find "$SOURCE_DIR" -type l -print -quit | grep -q .; then
   fail "Release source must not contain symlinks."
@@ -120,23 +122,52 @@ mkdir -p "$LAUNCHER_DIR"
 assert_launcher_safe Forge
 assert_launcher_safe Forgetrace
 
-mkdir -p "$EXTENSIONS_DIR"
-if [ -e "$TARGET_DIR" ] || [ -L "$TARGET_DIR" ]; then
-  mkdir -p "$BACKUP_DIR"
-  BACKUP_PATH="$BACKUP_DIR/forge-for-pi-$(date -u +%Y%m%dT%H%M%SZ)"
-  [ ! -e "$BACKUP_PATH" ] || BACKUP_PATH="${BACKUP_PATH}-$$"
+mkdir -p "$EXTENSIONS_DIR" "$BACKUP_DIR"
+CHECKPOINT="$(mktemp -d "$BACKUP_DIR/checkpoint.XXXXXX")"
+for name in Forge Forgetrace; do
+  if [ -e "$LAUNCHER_DIR/$name" ]; then cp -p "$LAUNCHER_DIR/$name" "$CHECKPOINT/$name"; fi
+done
+for name in .bashrc .zshrc; do
+  if [ -f "$HOME/$name" ] && [ ! -L "$HOME/$name" ]; then cp -p "$HOME/$name" "$CHECKPOINT/$name"; fi
+done
+BACKUP_PATH=""
+CONFIG_UPDATED=""
+INSTALL_STARTED=0
+rollback() {
+  local status=$? name
+  [ "$status" -ne 0 ] || return 0
+  trap - EXIT
+  set +e
+  local failed=0
+  if [ "$INSTALL_STARTED" -eq 1 ]; then
+    if [ -e "$TARGET_DIR" ]; then mv "$TARGET_DIR" "$CHECKPOINT/failed-installation" || failed=1; fi
+    if [ -n "$BACKUP_PATH" ]; then cp -Rp "$BACKUP_PATH" "$TARGET_DIR" || failed=1; fi
+    for name in Forge Forgetrace; do
+      if [ -e "$CHECKPOINT/$name" ]; then cp -p "$CHECKPOINT/$name" "$LAUNCHER_DIR/$name" || failed=1;
+      elif [ -e "$LAUNCHER_DIR/$name" ]; then mv "$LAUNCHER_DIR/$name" "$CHECKPOINT/new-$name" || failed=1; fi
+    done
+  fi
+  if [ -n "$CONFIG_UPDATED" ]; then
+    name="$(basename "$CONFIG_UPDATED")"
+    if [ -e "$CHECKPOINT/$name" ]; then cp -p "$CHECKPOINT/$name" "$CONFIG_UPDATED" || failed=1;
+    elif [ -e "$CONFIG_UPDATED" ]; then mv "$CONFIG_UPDATED" "$CHECKPOINT/new-$name" || failed=1; fi
+  fi
+  echo "FAIL: rollback checkpoint retained: $CHECKPOINT (restore errors: $failed)" >&2
+  exit "$status"
+}
+trap rollback EXIT
+if [ -e "$TARGET_DIR" ]; then
+  BACKUP_PATH="$CHECKPOINT/previous-installation"
   mv "$TARGET_DIR" "$BACKUP_PATH"
-  echo "Backed up existing Forge installation to $BACKUP_PATH"
 fi
-
-# Copy, never link: the installed extension remains valid after this release
-# directory is moved or removed.
+INSTALL_STARTED=1
 cp -R "$SOURCE_DIR" "$TARGET_DIR"
-find "$TARGET_DIR" -type l -print -quit | grep -q . && { rm -rf "$TARGET_DIR"; fail "Installation rejected symlinked content."; }
-
+assert_safe_tree "$TARGET_DIR" || fail 'Installation rejected symlinked content.'
 write_launcher Forge 0
 write_launcher Forgetrace 1
+bash "$SCRIPT_DIR/verify-install.sh"
 configure_path
+trap - EXIT
 
 echo "Installed Forge for Pi $VERSION to $TARGET_DIR"
 echo "Use: Forge"

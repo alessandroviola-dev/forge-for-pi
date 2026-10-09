@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_PI_VERSION="1.0.4"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+source "$SCRIPT_DIR/pi-checks.sh"
 SOURCE_DIR="$SCRIPT_DIR/../src/forge-for-pi"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 TARGET_DIR="$AGENT_DIR/extensions/forge-for-pi"
@@ -15,8 +15,8 @@ REQUIRED=(
   task-progress-monitor.ts task-progress-monitor-core.mjs forge-telemetry.ts
 )
 
-command -v pi >/dev/null 2>&1 || { echo "FAIL: pi is not installed" >&2; exit 1; }
-[ "$(pi --version 2>/dev/null | tr -d '[:space:]')" = "$EXPECTED_PI_VERSION" ] || { echo "FAIL: Pi $EXPECTED_PI_VERSION is required" >&2; exit 1; }
+for path in "$TARGET_DIR" "$LAUNCHER_DIR/Forge" "$LAUNCHER_DIR/Forgetrace"; do assert_safe_tree "$path" || exit 1; done
+check_pi "$TARGET_DIR/index.ts" || { echo 'FAIL: Pi functional compatibility checks failed' >&2; exit 1; }
 [ -d "$TARGET_DIR" ] && [ ! -L "$TARGET_DIR" ] || { echo "FAIL: Forge installation is missing or symlinked" >&2; exit 1; }
 for file in "${REQUIRED[@]}"; do
   [ -f "$TARGET_DIR/$file" ] || { echo "FAIL: missing $file" >&2; exit 1; }
@@ -38,12 +38,12 @@ for launcher in Forge Forgetrace; do
 done
 grep -Fqx 'exec env -u FORGEJEV -u FORGEJEV_TRACE -u FORGEJEV_JEV_ROUTING -u FORGEAPIS -u FORGEAPIS_TRACE -u FORGEAPIS_JEV_ROUTING FORGE_FOR_PI=1 pi --no-extensions --extension "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/forge-for-pi/index.ts" --no-skills "$@"' "$LAUNCHER_DIR/Forge" || { echo "FAIL: Forge launcher command is incorrect" >&2; exit 1; }
 grep -Fqx 'exec env -u FORGEJEV -u FORGEJEV_TRACE -u FORGEJEV_JEV_ROUTING -u FORGEAPIS -u FORGEAPIS_TRACE -u FORGEAPIS_JEV_ROUTING FORGE_FOR_PI=1 FORGE_FOR_PI_TRACE=1 pi --no-extensions --extension "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/forge-for-pi/index.ts" --no-skills "$@"' "$LAUNCHER_DIR/Forgetrace" || { echo "FAIL: Forgetrace launcher command is incorrect" >&2; exit 1; }
-[ "$("$LAUNCHER_DIR/Forge" --version 2>/dev/null | tr -d '[:space:]')" = "$EXPECTED_PI_VERSION" ] || { echo "FAIL: Forge launcher does not start Pi" >&2; exit 1; }
-[ "$("$LAUNCHER_DIR/Forgetrace" --version 2>/dev/null | tr -d '[:space:]')" = "$EXPECTED_PI_VERSION" ] || { echo "FAIL: Forgetrace launcher does not start Pi" >&2; exit 1; }
+[ "$("$LAUNCHER_DIR/Forge" --version 2>/dev/null | tr -d '[:space:]')" = "$PI_VERSION" ] || { echo "FAIL: Forge launcher does not start Pi" >&2; exit 1; }
+[ "$("$LAUNCHER_DIR/Forgetrace" --version 2>/dev/null | tr -d '[:space:]')" = "$PI_VERSION" ] || { echo "FAIL: Forgetrace launcher does not start Pi" >&2; exit 1; }
 
 diff -qr "$SOURCE_DIR" "$TARGET_DIR" || { echo "FAIL: installed Forge differs from source" >&2; exit 1; }
 
 # This checks executable availability only; runtime isolation is qualified by
 # test/run-pi-runtime-validation.mjs without sending a model prompt.
 FORGE_FOR_PI=0 pi --version >/dev/null
-printf 'PASS: Pi %s; Forge launchers and regular install are valid; vanilla executable available.\n' "$EXPECTED_PI_VERSION"
+printf 'PASS: Pi %s; Forge launchers and regular install are valid; vanilla executable available.\n' "$PI_VERSION"

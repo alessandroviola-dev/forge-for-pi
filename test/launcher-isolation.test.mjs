@@ -88,11 +88,11 @@ test("Forge preserves caller Forge trace/snapshot options and custom agent direc
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
 
-test("installer and verifier pin exactly Pi 1.0.4 and only manage Forge destinations", async () => {
+test("installer and verifier check capabilities and only manage Forge destinations", async () => {
   const verify = await readFile(new URL("../scripts/verify-install.sh", import.meta.url), "utf8");
   for (const script of [install, verify]) {
-    assert.match(script, /EXPECTED_PI_VERSION="1\.0\.4"/);
-    assert.doesNotMatch(script, /0\.84\.4/);
+    assert.doesNotMatch(script, /EXPECTED_PI_VERSION|1\.0\.4|0\.84\.4/);
+    assert.match(script, /check_pi /);
   }
   assert.match(install, /TARGET_DIR="\$EXTENSIONS_DIR\/forge-for-pi"/);
   assert.match(install, /write_launcher Forge 0/);

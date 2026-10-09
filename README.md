@@ -45,14 +45,16 @@ Task Progress Monitor is host/TUI-only and has zero model-facing token overhead.
 
 ## Install
 
-The current installation target is exactly Pi 1.0.4.
+Installation uses functional compatibility checks, not a Pi version allowlist. Pi must provide a working CLI, `--no-extensions`, `--extension`, `--no-skills`, compatible extension registration and Forge's tool/UI lifecycle APIs. Versions are accepted only when these offline checks pass; this is not a guarantee of compatibility with every future Pi release.
 
 ```sh
 ./scripts/install.sh
 ./scripts/verify-install.sh
 ```
 
-The installer copies the extension to `~/.pi/agent/extensions/forge-for-pi/`, creates Forge-managed launchers in `~/.local/bin`, backs up a previous Forge installation outside extension discovery, and does not touch `auth.json`, `models.json`, skills, or unrelated user configuration. It will not overwrite a non-Forge launcher and is safe to run again.
+The installer copies the extension to `~/.pi/agent/extensions/forge-for-pi/`, creates Forge-managed launchers in `~/.local/bin`, and retains previous extensions, launchers and shell configuration in checkpoints outside extension discovery. It verifies the replacement before completion; failures restore previous artifacts and retain failed output. A filesystem error during rollback requires manual recovery from the retained checkpoint. Symlinked paths/content and unmanaged or shadowed launchers are rejected. It does not touch `auth.json`, `models.json`, skills or sibling installs. Only Forge's managed shell PATH block may be added when needed.
+
+The capability probe loads an isolated synthetic lifecycle handler and the Forge factory without dispatching Forge's production handlers, creating a session, reading credentials or calling models. Pi 1.0.4, 1.1.0 and a future version are covered by deterministic simulations; real Pi 1.1.0 startup, installer/verifier and isolation have been verified in sandbox. This qualifies the checked-out source, not a replacement of the historical v1.0.2 release archive or the existing installed Forge.
 
 To remove Forge, its managed launchers, and only its managed PATH block:
 
@@ -77,7 +79,7 @@ The -25.90% figure applies only to the specific Smart Read benchmark. It does **
 
 - Reactive Diagnostics v1.0.0 is primarily Python/Ruff.
 - Task Progress Monitor relies on observable lifecycle evidence and cannot semantically prove absolute task completion.
-- The current verified installation/startup target is exactly Pi 1.0.4. Historical Pi 0.84.4 renderer evidence remains in `docs/MANUAL_VALIDATION.md`; no new manual TUI or live model validation is claimed.
+- Functional checks can demonstrate incompatibilities but cannot prove every future Pi behavior. Historical Pi 0.84.4 renderer evidence remains in `docs/MANUAL_VALIDATION.md`; no new manual TUI or live model validation is claimed.
 - Forge for Pi is independent and is not affiliated with or approved by Pi's maintainers.
 
 See `docs/` for architecture, design principles, and benchmark scope.

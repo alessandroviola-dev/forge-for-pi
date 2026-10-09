@@ -1,17 +1,19 @@
 # Release Checklist
 
-## Current main qualification — Pi 1.0.4
+## Current source qualification — functional Pi compatibility
 
-The current installer/verifier target is exactly Pi 1.0.4. No new release, tag, archive or manual TUI/live-model evidence is produced by this qualification.
+No numerical version restriction. Deterministic Pi 1.0.4, 1.1.0 and future-version simulations cover compatibility and incompatibility paths. Real Pi 1.1.0 qualification runs in an isolated sandbox. No new release, tag, archive or manual TUI/live-model evidence is produced.
 
-- [ ] Full tracked unit/regression suite and deterministic task-progress validation pass locally.
-- [ ] Real Pi 1.0.4 startup/extension registration passes without a model request.
-- [ ] Forge/Forgetrace neutralize inherited sibling activation, trace and routing variables while preserving Forge options/cwd/arguments.
-- [ ] Only the Forge base entrypoint loads in Forge/Forgetrace; no sibling or second Forge copy loads.
-- [ ] Plain Pi stays unchanged and product-inactive in a clean environment.
-- [ ] Shell/Node syntax and privacy/secret/path scans pass.
-- [ ] Current SHA-256 manifest is regenerated and verifies, including new tests.
-- [ ] Install, verify-install and installed-source parity pass on Pi 1.0.4.
+- [x] Full tracked unit/regression suite and deterministic task-progress validation pass locally.
+- [x] Real Pi 1.1.0 sandbox startup/extension registration passes without a model request.
+- [x] Forge/Forgetrace neutralize inherited sibling activation, trace and routing variables while preserving Forge options/cwd/arguments.
+- [x] Only the Forge base entrypoint loads in Forge/Forgetrace; no sibling or second Forge copy loads.
+- [x] Plain Pi stays unchanged and product-inactive in a clean environment.
+- [x] Shell/Node syntax and privacy/secret/path scans pass.
+- [x] Current SHA-256 manifest is regenerated and verifies, including new tests.
+- [x] Install, verify-install and source parity pass in a Pi 1.1.0 sandbox; real installations are preserved.
+- [x] Missing CLI/flags/APIs, unsafe symlinks and unmanaged launchers are rejected.
+- [x] Failed copy and launcher verification restore old extensions and launchers; checkpoints are retained.
 
 ## Historical release evidence — 1.0.2
 

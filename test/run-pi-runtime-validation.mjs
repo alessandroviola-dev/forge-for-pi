@@ -30,7 +30,7 @@ async function findPiPackage(entrypoint) {
   }
 }
 assert.equal(piPackage.name, "@earendil-works/pi-coding-agent", "pi resolves to the real Pi package, not a Forge wrapper");
-assert.equal(execFileSync(pi, ["--version"], { env: cleanEnv, encoding: "utf8" }).trim(), "1.0.4");
+assert.ok(execFileSync(pi, ["--version"], { env: cleanEnv, encoding: "utf8" }).trim(), "Pi CLI must function; no numerical version restriction");
 const piModule = pathToFileURL(join(dirname(realPi), "index.js")).href;
 const root = await mkdtemp(join(tmpdir(), "forge-runtime-"));
 const agent = resolve(process.env.PI_CODING_AGENT_DIR || join(process.env.HOME, ".pi/agent"));
